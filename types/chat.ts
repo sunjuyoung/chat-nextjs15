@@ -1,7 +1,7 @@
 // 채팅 메시지 인터페이스
 export interface ChatMessage {
   id: string;
-  roomId: string;
+  roomId: number;
   senderId: string;
   senderName: string;
   senderAvatar?: string;
@@ -13,10 +13,13 @@ export interface ChatMessage {
 
 // 채팅방 인터페이스
 export interface ChatRoom {
-  id: string;
-  name: string;
-  participants: string[];
-  lastMessage?: ChatMessage;
+  roomId: number;
+  roomName: string;
+  memberCount: number;
+  lastMessageId: number;
+  lastMessageSenderName: string;
+  lastMessageContent: string;
+  lastMessageCreatedAt: string;
   unreadCount: number;
   createdAt: string;
   updatedAt: string;

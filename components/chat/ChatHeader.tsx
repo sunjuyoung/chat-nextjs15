@@ -1,18 +1,28 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { ArrowLeft, MoreVertical, User } from "lucide-react";
+import {
+  ArrowLeft,
+  MoreVertical,
+  User,
+  MessageSquare,
+  Users,
+} from "lucide-react";
 
 interface ChatHeaderProps {
-  roomId: string;
+  roomId: number;
   userName?: string;
   userStatus?: "online" | "offline";
+  onOpenRoomList?: () => void;
+  onOpenMemberList?: () => void;
 }
 
 export default function ChatHeader({
   roomId,
   userName = "채팅방",
   userStatus = "online",
+  onOpenRoomList,
+  onOpenMemberList,
 }: ChatHeaderProps) {
   const router = useRouter();
 
@@ -58,13 +68,36 @@ export default function ChatHeader({
           </div>
         </div>
 
-        {/* 오른쪽: 더보기 메뉴 */}
-        <button
-          className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200"
-          aria-label="메뉴"
-        >
-          <MoreVertical className="w-6 h-6 text-gray-700" />
-        </button>
+        {/* 오른쪽: 버튼 그룹 */}
+        <div className="flex items-center space-x-2">
+          {/* 방 목록 버튼 */}
+          <button
+            onClick={onOpenRoomList}
+            className="p-2 hover:bg-blue-50 rounded-full transition-colors duration-200 group"
+            aria-label="채팅방 목록"
+            title="채팅방 목록"
+          >
+            <MessageSquare className="w-6 h-6 text-gray-700 group-hover:text-blue-600" />
+          </button>
+
+          {/* 회원 목록 버튼 */}
+          <button
+            onClick={onOpenMemberList}
+            className="p-2 hover:bg-green-50 rounded-full transition-colors duration-200 group"
+            aria-label="회원 목록"
+            title="회원 목록"
+          >
+            <Users className="w-6 h-6 text-gray-700 group-hover:text-green-600" />
+          </button>
+
+          {/* 더보기 메뉴 */}
+          <button
+            className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200"
+            aria-label="메뉴"
+          >
+            <MoreVertical className="w-6 h-6 text-gray-700" />
+          </button>
+        </div>
       </div>
     </div>
   );

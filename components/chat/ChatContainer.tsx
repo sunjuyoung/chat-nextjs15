@@ -2,17 +2,21 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ChatHeader from "./ChatHeader";
 import ChatMessageList from "@/components/chat/ChatMessageList";
 import ChatInputForm from "@/components/chat/ChatInputForm";
 import ChatTypingIndicator from "@/components/chat/ChatTypingIndicator";
+import RoomListPanel from "@/components/chat/RoomListPanel";
+import MemberListPanel from "@/components/chat/MemberListPanel";
 import { ChatMessage, ChatUser } from "@/types/chat";
 import SockJS from "sockjs-client";
 import { Client, IMessage } from "@stomp/stompjs";
+import { fetchChatMessages, markAsReadOnEnter } from "@/actions/chatActions";
 
 interface ChatContainerProps {
-  roomId: string;
+  roomId: number;
   initialMessages?: ChatMessage[];
 }
 
@@ -20,25 +24,70 @@ export default function ChatContainer({
   roomId,
   initialMessages = [],
 }: ChatContainerProps) {
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [isTyping, setIsTyping] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  // const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const [showRoomList, setShowRoomList] = useState(false);
+  const [showMemberList, setShowMemberList] = useState(false);
   const API_SERVER_HOST =
     process.env.API_SERVER_HOST || "http://localhost:8080";
 
   const stompClientRef = useRef<Client | null>(null);
+  const subscriptionsRef = useRef<any[]>([]);
+  const token = session?.user?.accessToken;
+  const [realtimeMessages, setRealtimeMessages] = useState<ChatMessage[]>([]);
+
+  // ✅ 1. useQuery로 기존 메시지 불러오기
+
+  const {
+    data: serverMessages = [],
+    isLoading: isLoadingMessages,
+    error: messagesError,
+  } = useQuery({
+    queryKey: ["chatMessages", roomId],
+    queryFn: () => fetchChatMessages(roomId, token),
+    enabled: !!token && !!roomId, // 토큰과 roomId가 있을 때만 실행
+    staleTime: 0, // 30초
+  });
+
+  // 서버 메시지가 로드되면 상태 초기화
+  useEffect(() => {
+    if (serverMessages.length > 0) {
+      setRealtimeMessages([]);
+    }
+  }, [serverMessages]);
+
+  // 최종 메시지 리스트 = 서버 메시지 + 실시간 메시지
+  const messages = [...serverMessages, ...realtimeMessages];
 
   useEffect(() => {
     // 클라이언트 사이드에서만 실행
     if (typeof window === "undefined") return;
 
+    // 세션이 로딩 중이거나 인증되지 않았으면 대기
+    if (sessionStatus === "loading") {
+      console.log("Session is loading...");
+      return;
+    }
+
+    // 토큰이 없으면 연결하지 않음
+    if (!token) {
+      console.log("No access token available");
+      return;
+    }
+
     // STOMP 클라이언트 생성
     const socket = new SockJS("http://localhost:8080/connect"); // Spring Boot 서버 주소
+
     const stompClient = new Client({
       webSocketFactory: () => socket as any,
+      connectHeaders: {
+        Authorization: `Bearer ${token}`,
+      },
       debug: (str) => {
         console.log("STOMP: " + str);
       },
@@ -52,16 +101,28 @@ export default function ChatContainer({
       setIsConnected(true);
 
       // 메시지 구독
-      stompClient.subscribe("/topic/1", (message: IMessage) => {
-        const receivedMessage: ChatMessage = JSON.parse(message.body);
-        setMessages((prev) => [...prev, receivedMessage]);
-      });
+      const subscription = stompClient.subscribe(
+        `/topic/${roomId}`,
+        (message: IMessage) => {
+          const receivedMessage: ChatMessage = JSON.parse(message.body);
+          setRealtimeMessages((prev) => [...prev, receivedMessage]);
+          markAsRead(roomId, receivedMessage.id); //  메시지 받으면 자동으로 읽음 처리 API 호출
+        },
+        {
+          Authorization: `Bearer ${token}`,
+        }
+      );
+
+      subscriptionsRef.current.push(subscription);
 
       // 사용자별 개인 메시지 구독 (선택사항)
       // stompClient.subscribe(`/user/queue/private`, (message: IMessage) => {
       //   const receivedMessage: ChatMessage = JSON.parse(message.body);
       //   setMessages((prev) => [...prev, receivedMessage]);
       // });
+
+      // 채팅방 입장 시 읽음 처리(기존 메시지 읽음 처리)
+      markAsReadOnEnterHandler(roomId, token);
     };
 
     // 연결 에러 시
@@ -77,11 +138,21 @@ export default function ChatContainer({
 
     // 컴포넌트 언마운트 시 연결 해제
     return () => {
-      if (stompClient) {
-        stompClient.deactivate();
-      }
+      const cleanup = async () => {
+        subscriptionsRef.current.forEach((sub) => sub?.unsubscribe());
+        subscriptionsRef.current = [];
+
+        if (stompClientRef.current) {
+          await stompClientRef.current.deactivate();
+          stompClientRef.current = null;
+        }
+
+        setIsConnected(false);
+      };
+
+      cleanup();
     };
-  }, [roomId]);
+  }, [roomId, token, sessionStatus]);
 
   // 메시지 전송 mutation
   const sendMessageMutation = useMutation({
@@ -105,32 +176,17 @@ export default function ChatContainer({
 
       return response.json();
     },
-    onSuccess: () => {
-      // 메시지 목록 새로고침
-      queryClient.invalidateQueries({ queryKey: ["chatMessages", roomId] });
-    },
   });
 
   const handleSendMessage = async (content: string) => {
     if (!content.trim() || !session?.user?.email) return;
 
-    // id: string;
-    // roomId: string;
-    // senderId: string;
-    // senderName: string;
-    // senderAvatar?: string;
-    // content: string;
-    // timestamp: string;
-    // isRead: boolean;
-    // type: "text" | "image" | "file";
     try {
-      console.log(content);
-
       const chatMessage: ChatMessage = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         roomId,
         senderId: session?.user?.email || "",
-        senderName: session?.user?.name || session?.user?.email || "",
+        senderName: session?.user?.name || "",
         content,
         timestamp: new Date().toISOString(),
         isRead: false,
@@ -139,8 +195,14 @@ export default function ChatContainer({
 
       // 메시지 발행
       stompClientRef.current?.publish({
-        destination: "/publish/1", // Spring Controller의 @MessageMapping 경로
+        destination: `/publish/${roomId}`, // Spring Controller의 @MessageMapping 경로
         body: JSON.stringify(chatMessage),
+      });
+
+      //메시지 발행이 끝나면 해당 채팅방 메시지 목록과 채팅방 목록 캐시를 무효화
+      queryClient.invalidateQueries({ queryKey: ["chatMessages", roomId] });
+      queryClient.invalidateQueries({
+        queryKey: ["chatRooms", session?.user?.id],
       });
 
       //await sendMessageMutation.mutateAsync(content);
@@ -155,18 +217,46 @@ export default function ChatContainer({
     // 실제로는 WebSocket으로 다른 사용자에게 타이핑 상태 전송
   };
 
-  // if (isLoading) {
-  //   return (
-  //     <div className="flex items-center justify-center h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-  //       <div className="text-center">
-  //         <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto"></div>
-  //         <p className="mt-4 text-gray-600 font-medium">
-  //           채팅을 불러오는 중...
-  //         </p>
-  //       </div>
-  //     </div>
-  //   );
-  // }
+  const handleSelectRoom = (selectedRoomId: number) => {
+    router.push(`/chat/room/${selectedRoomId}`);
+  };
+
+  // 읽음 처리 함수 (REST API 호출)
+  const markAsRead = async (roomId: number, messageId: string) => {
+    try {
+      //  await axios.post(`/api/chatrooms/${roomId}/read`, { messageId });
+    } catch (error) {
+      console.error("Failed to mark as read:", error);
+    }
+  };
+
+  // 채팅방 입장 시 읽음 처리
+  const markAsReadOnEnterHandler = async (roomId: number, token: string) => {
+    try {
+      // 마지막 메시지까지 읽음 처리
+      console.log("Mark as read on enter:", roomId, token);
+      await markAsReadOnEnter(roomId, token);
+    } catch (error) {
+      console.error("Failed to mark as read on enter:", error);
+    }
+  };
+
+  const handleStartChat = (userId: string) => {
+    console.log("Start chat with:", userId);
+  };
+
+  if (isLoadingMessages) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600 font-medium">
+            채팅을 불러오는 중...
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // if (error) {
   //   return (
@@ -185,7 +275,11 @@ export default function ChatContainer({
   return (
     <div className="flex flex-col h-screen bg-gradient-to-br from-gray-50 via-blue-50 to-indigo-50">
       {/* 헤더 */}
-      <ChatHeader roomId={roomId} />
+      <ChatHeader
+        roomId={roomId}
+        onOpenRoomList={() => setShowRoomList(true)}
+        onOpenMemberList={() => setShowMemberList(true)}
+      />
 
       {/* 메시지 리스트 영역 */}
       <div className="flex-1 overflow-hidden">
@@ -207,6 +301,21 @@ export default function ChatContainer({
         onSendMessage={handleSendMessage}
         onTyping={handleTyping}
         disabled={sendMessageMutation.isPending}
+      />
+
+      {/* 방 목록 사이드 패널 */}
+      <RoomListPanel
+        isOpen={showRoomList}
+        onClose={() => setShowRoomList(false)}
+        onSelectRoom={handleSelectRoom}
+        currentRoomId={roomId}
+      />
+
+      {/* 회원 목록 사이드 패널 */}
+      <MemberListPanel
+        isOpen={showMemberList}
+        onClose={() => setShowMemberList(false)}
+        onStartChat={handleStartChat}
       />
     </div>
   );

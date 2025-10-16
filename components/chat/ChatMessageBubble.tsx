@@ -19,8 +19,6 @@ export default function ChatMessageBubble({
     });
   };
 
-  console.log("bubbleMesage", message);
-
   return (
     <div
       className={`flex ${

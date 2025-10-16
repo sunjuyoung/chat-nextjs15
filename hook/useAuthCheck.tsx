@@ -4,6 +4,7 @@ import { useEffect } from "react";
 
 export const useAuthCheck = () => {
   const { data: session, status: sessionStatus } = useSession();
+  //unauthenticated
 
   return { session, sessionStatus };
 };

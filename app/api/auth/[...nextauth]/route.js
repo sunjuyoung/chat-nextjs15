@@ -75,7 +75,7 @@ export const authOptions = {
 
         token.accessToken = result.accessToken;
         token.refreshToken = result.refreshToken;
-        token.accessTokenExpires = Date.now() + 1000 * 60 * 60; //1h
+        token.accessTokenExpires = Date.now() + 1000 * 60 * 10; //10m
 
         return token;
       }
@@ -85,14 +85,14 @@ export const authOptions = {
         if (user) {
           console.log("jwt callback credentials");
           // 자체 로그인 사용자만 user 객체를 전달받습니다.
-          token.id = user.email;
+          token.id = user.id;
           token.role = user.role; // 예를 들어, 사용자의 역할(Role)을 JWT에 포함
           token.email = user.email;
           token.name = user.name;
 
           token.accessToken = user.accessToken;
           token.refreshToken = user.refreshToken;
-          token.accessTokenExpires = Date.now() + 1000 * 60 * 60; //1h
+          token.accessTokenExpires = Date.now() + 1000 * 60 * 10; //10m
         }
       }
 
@@ -153,14 +153,10 @@ async function refreshAccessToken(token) {
       throw new Error("Failed to refresh token");
     }
 
-    // token.id = refreshedUser.email;
-    // token.role = refreshedUser.role;
-    // token.email = refreshedUser.email;
-    // token.name = refreshedUser.nickname;
     token.accessToken = refreshedUser.data.accessToken;
     token.refreshToken = refreshedUser.data.refreshToken;
 
-    token.accessTokenExpires = Date.now() + 60 * 60 * 1000; // 1시간으로 재설정
+    token.accessTokenExpires = Date.now() + 60 * 10 * 1000; //10m
     return token;
   } catch (error) {
     console.error("Error refreshing token:", error);
