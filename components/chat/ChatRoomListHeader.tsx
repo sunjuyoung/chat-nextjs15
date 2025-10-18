@@ -8,11 +8,13 @@ import { useRouter } from "next/navigation";
 interface ChatRoomListHeaderProps {
   roomCount: number;
   onCreateRoom: () => void;
+  title?: string;
 }
 
 export default function ChatRoomListHeader({
   roomCount,
   onCreateRoom,
+  title = "채팅방 목록",
 }: ChatRoomListHeaderProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const { data: session } = useSession();
@@ -53,7 +55,7 @@ export default function ChatRoomListHeader({
           <div className="flex items-center space-x-3">
             <MessageSquare className="w-8 h-8 text-blue-600" />
             <div>
-              <h1 className="text-2xl font-bold text-gray-900">채팅방 목록</h1>
+              <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
               <p className="text-sm text-gray-500 mt-0.5">
                 {roomCount}개의 채팅방
               </p>

@@ -113,11 +113,25 @@ export const authOptions = {
       }
 
       //토큰 만료 후
-      return refreshAccessToken(token);
+      const refreshedToken = await refreshAccessToken(token);
+
+      // 토큰 재발급 실패 시 에러 토큰 반환
+      if (refreshedToken.error === "RefreshAccessTokenError") {
+        console.log("Token refresh failed in JWT callback");
+        return { ...refreshedToken };
+      }
+
+      return refreshedToken;
     },
 
     async session({ session, user, token }) {
       console.log("session callback");
+
+      // 토큰 재발급 실패 시 세션을 null로 반환하여 자동 signout
+      if (token.error === "RefreshAccessTokenError") {
+        console.log("Token refresh failed, signing out user");
+        return null;
+      }
 
       session.user.id = token.id;
       session.user.role = token.role;

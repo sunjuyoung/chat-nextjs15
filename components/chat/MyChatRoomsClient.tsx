@@ -1,76 +1,53 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { MessageSquare, Users, Hash, Plus } from "lucide-react";
-import { ChatRoom } from "@/types/chat";
+import { ChatMessage, ChatRoom } from "@/types/chat";
 import { formatDistanceToNow } from "date-fns";
 import { ko } from "date-fns/locale";
-import CreateRoomModal from "./CreateRoomModal";
-import ChatRoomListHeader from "./ChatRoomListHeader";
-import { createChatRoom, fetchAllChatRooms } from "@/actions/chatActions";
+import CreateRoomModal from "@/components/chat/CreateRoomModal";
+import ChatRoomListHeader from "@/components/chat/ChatRoomListHeader";
+import { createChatRoom, fetchUserChatRooms } from "@/actions/chatActions";
 import { useSession } from "next-auth/react";
-import {
-  useInfiniteQuery,
-  useMutation,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useStompStore } from "@/stores/stompStore";
+import { IMessage } from "@stomp/stompjs";
 
-export default function ChatRoomList() {
+interface MyChatRoomsClientProps {
+  initialRooms?: ChatRoom[];
+}
+
+export default function MyChatRoomsClient({
+  initialRooms = [],
+}: MyChatRoomsClientProps) {
   const router = useRouter();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const { data: session, status: sessionStatus } = useSession();
   const queryClient = useQueryClient();
+  const token = session?.user?.accessToken;
+  const userId = session?.user?.id;
 
   // STOMP 연결 상태 확인
-  const { isConnected } = useStompStore();
+  const { isConnected, subscribe, unsubscribe } = useStompStore();
+  const subscriptionIdRef = useRef<string>("");
 
+  // 사용자의 채팅방 목록 조회
   const {
-    data,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
+    data: rooms = initialRooms,
     isPending,
     isError,
     error,
-  } = useInfiniteQuery({
-    queryKey: ["chatRooms", "infinite", session?.user?.id],
-    queryFn: ({ pageParam = null }: { pageParam: number | null }) =>
-      fetchAllChatRooms(pageParam, session?.user?.accessToken || ""),
-    enabled: !!session?.user?.accessToken,
-    getNextPageParam: (lastPage) => {
-      // 마지막 페이지의 마지막 roomId를 다음 페이지 파라미터로 사용
-
-      if (lastPage && lastPage?.length > 0) {
-        return lastPage[lastPage?.length - 1].roomId;
-      }
-      return undefined;
-    },
-    staleTime: 1000 * 60, // 1분간 fresh 상태 유지
-    initialPageParam: null, // 첫번째 페이지는 null
+  } = useQuery({
+    queryKey: ["userChatRooms", session?.user?.id],
+    queryFn: () =>
+      fetchUserChatRooms(
+        session?.user?.id || "",
+        session?.user?.accessToken || ""
+      ),
+    enabled: !!session?.user?.id, // 세션이 있을 때만 실행
+    staleTime: 0, // 1분간 fresh 상태 유지
   });
-
-  // 모든 페이지의 데이터를 하나의 배열로 합치기
-  const rooms = data?.pages.flatMap((page) => page || []) || [];
-
-  // 무한 스크롤을 위한 Intersection Observer
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const lastRoomElementRef = useCallback(
-    (node: HTMLButtonElement | null) => {
-      if (isFetchingNextPage) return;
-      if (observerRef.current) observerRef.current.disconnect();
-
-      observerRef.current = new IntersectionObserver((entries) => {
-        if (entries[0].isIntersecting && hasNextPage) {
-          fetchNextPage();
-        }
-      });
-
-      if (node) observerRef.current.observe(node);
-    },
-    [isFetchingNextPage, hasNextPage, fetchNextPage]
-  );
 
   const createRoomMutation = useMutation({
     mutationFn: (roomName: string) =>
@@ -78,13 +55,73 @@ export default function ChatRoomList() {
     onSuccess: (data: { roomId: number }) => {
       router.push(`/chat/room/${data.roomId}`);
       queryClient.invalidateQueries({
-        queryKey: ["chatRooms", "infinite", session?.user?.id],
+        queryKey: ["userChatRooms", session?.user?.id],
       });
     },
     onError: (error: Error) => {
       console.error("Failed to create room:", error);
     },
   });
+
+  // STOMP 연결 상태에 따른 구독 관리
+  useEffect(() => {
+    // 클라이언트 사이드에서만 실행
+    if (typeof window === "undefined") return;
+
+    // 세션이 로딩 중이거나 인증되지 않았으면 대기
+    if (sessionStatus === "loading") {
+      console.log("Session is loading...");
+      return;
+    }
+
+    // STOMP가 연결되었을 때만 구독
+    if (isConnected) {
+      console.log("Subscribing to room:");
+
+      // 메시지 구독
+      const subscriptionId = subscribe(
+        `/user/2/notifications`,
+        (message: IMessage) => {
+          const receivedMessage: ChatMessage = JSON.parse(message.body);
+          console.log("Received notification:", receivedMessage);
+
+          //query setQueryData
+          //receivedMessage.roomId를 찾아서 unreadCount를 1 증가
+          //lastMessageContent : receivedMessage.content
+          //receivedMessage.roomId number로 변환
+          queryClient.setQueryData(
+            ["userChatRooms", session?.user?.id],
+            (old: ChatRoom[]) => {
+              return old.map((room) => {
+                if (room.roomId === Number(receivedMessage.roomId)) {
+                  return {
+                    ...room,
+                    unreadCount: room.unreadCount + 1,
+                    lastMessageContent: receivedMessage.content,
+                  };
+                }
+                return room;
+              });
+            }
+          );
+        },
+        {
+          Authorization: `Bearer ${token}`,
+        }
+      );
+
+      subscriptionIdRef.current = subscriptionId;
+    }
+
+    // 컴포넌트 언마운트 시 구독 해제
+    return () => {
+      if (subscriptionIdRef.current) {
+        console.log("Unsubscribing from room:");
+        unsubscribe(subscriptionIdRef.current);
+        subscriptionIdRef.current = "";
+      }
+    };
+  }, [token, sessionStatus, isConnected, subscribe, unsubscribe]);
 
   // 세션이 로딩 중이거나 인증되지 않았으면 대기
   if (sessionStatus === "loading") {
@@ -98,18 +135,31 @@ export default function ChatRoomList() {
     );
   }
 
-  if (isPending) {
+  if (isPending && initialRooms.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">로딩 중...</p>
+          <p className="text-gray-600">채팅방 목록을 불러오는 중...</p>
         </div>
       </div>
     );
   }
+
   if (isError) {
-    return <span>Error: {error.message}</span>;
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="text-red-500 mb-4">
+            <MessageSquare className="w-16 h-16 mx-auto mb-2" />
+          </div>
+          <p className="text-red-600 font-medium">
+            채팅방 목록을 불러오는데 실패했습니다
+          </p>
+          <p className="text-gray-500 text-sm mt-2">{error?.message}</p>
+        </div>
+      </div>
+    );
   }
 
   const formatTime = (timestamp: string) => {
@@ -128,9 +178,6 @@ export default function ChatRoomList() {
   };
 
   const handleCreateRoom = async (roomName: string) => {
-    // 실제로는 API 호출하여 채팅방 생성
-    console.log("Creating room:", roomName);
-
     createRoomMutation.mutate(roomName);
   };
 
@@ -140,7 +187,7 @@ export default function ChatRoomList() {
       <ChatRoomListHeader
         roomCount={rooms?.length || 0}
         onCreateRoom={() => setIsCreateModalOpen(true)}
-        title="전체 채팅방"
+        title="내 채팅방"
       />
 
       {/* 채팅방 목록 */}
@@ -149,7 +196,7 @@ export default function ChatRoomList() {
           <div className="flex flex-col items-center justify-center py-20 text-gray-400">
             <MessageSquare className="w-20 h-20 mb-6 text-gray-300" />
             <p className="text-xl font-medium text-gray-500 mb-2">
-              아직 참여한 채팅방이 없습니다
+              참여한 채팅방이 없습니다
             </p>
             <p className="text-sm text-gray-400 mb-6">
               새 채팅방을 만들어 대화를 시작해보세요
@@ -164,10 +211,9 @@ export default function ChatRoomList() {
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4">
-            {rooms.map((room: ChatRoom, index: number) => (
+            {rooms.map((room: ChatRoom) => (
               <button
                 key={room.roomId}
-                ref={index === rooms.length - 1 ? lastRoomElementRef : null}
                 onClick={() => handleRoomClick(room.roomId)}
                 className="bg-white rounded-xl shadow-sm hover:shadow-md transition-all duration-200 p-6 text-left border border-gray-100 hover:border-blue-200 group"
               >
@@ -225,13 +271,6 @@ export default function ChatRoomList() {
                 </div>
               </button>
             ))}
-
-            {/* 로딩 인디케이터 */}
-            {isFetchingNextPage && (
-              <div className="flex justify-center py-4">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-              </div>
-            )}
           </div>
         )}
       </div>

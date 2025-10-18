@@ -11,9 +11,9 @@ import ChatTypingIndicator from "@/components/chat/ChatTypingIndicator";
 import RoomListPanel from "@/components/chat/RoomListPanel";
 import MemberListPanel from "@/components/chat/MemberListPanel";
 import { ChatMessage, ChatUser } from "@/types/chat";
-import SockJS from "sockjs-client";
-import { Client, IMessage } from "@stomp/stompjs";
+import { IMessage } from "@stomp/stompjs";
 import { fetchChatMessages, markAsReadOnEnter } from "@/actions/chatActions";
+import { useStompStore } from "@/stores/stompStore";
 
 interface ChatContainerProps {
   roomId: number;
@@ -29,20 +29,17 @@ export default function ChatContainer({
   const queryClient = useQueryClient();
   const [isTyping, setIsTyping] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
-  // const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [showRoomList, setShowRoomList] = useState(false);
   const [showMemberList, setShowMemberList] = useState(false);
   const API_SERVER_HOST =
     process.env.API_SERVER_HOST || "http://localhost:8080";
 
-  const stompClientRef = useRef<Client | null>(null);
-  const subscriptionsRef = useRef<any[]>([]);
+  const { isConnected, subscribe, unsubscribe, publish } = useStompStore();
   const token = session?.user?.accessToken;
   const [realtimeMessages, setRealtimeMessages] = useState<ChatMessage[]>([]);
+  const subscriptionIdRef = useRef<string>("");
 
-  // ✅ 1. useQuery로 기존 메시지 불러오기
-
+  // 1. 기존 메시지 불러오기
   const {
     data: serverMessages = [],
     isLoading: isLoadingMessages,
@@ -51,7 +48,7 @@ export default function ChatContainer({
     queryKey: ["chatMessages", roomId],
     queryFn: () => fetchChatMessages(roomId, token),
     enabled: !!token && !!roomId, // 토큰과 roomId가 있을 때만 실행
-    staleTime: 0, // 30초
+    staleTime: 0, // 1분간 fresh 상태 유지
   });
 
   // 서버 메시지가 로드되면 상태 초기화
@@ -74,85 +71,42 @@ export default function ChatContainer({
       return;
     }
 
-    // 토큰이 없으면 연결하지 않음
+    // 토큰이 없으면 구독하지 않음
     if (!token) {
       console.log("No access token available");
       return;
     }
 
-    // STOMP 클라이언트 생성
-    const socket = new SockJS("http://localhost:8080/connect"); // Spring Boot 서버 주소
-
-    const stompClient = new Client({
-      webSocketFactory: () => socket as any,
-      connectHeaders: {
-        Authorization: `Bearer ${token}`,
-      },
-      debug: (str) => {
-        console.log("STOMP: " + str);
-      },
-      reconnectDelay: 5000,
-      heartbeatIncoming: 4000,
-      heartbeatOutgoing: 4000,
-    });
-    // 연결 성공 시
-    stompClient.onConnect = (frame) => {
-      console.log("Connected: " + frame);
-      setIsConnected(true);
+    // STOMP가 연결되었을 때만 구독
+    if (isConnected) {
+      console.log("Subscribing to room:", roomId);
 
       // 메시지 구독
-      const subscription = stompClient.subscribe(
+      const subscriptionId = subscribe(
         `/topic/${roomId}`,
         (message: IMessage) => {
           const receivedMessage: ChatMessage = JSON.parse(message.body);
           setRealtimeMessages((prev) => [...prev, receivedMessage]);
-          markAsRead(roomId, receivedMessage.id); //  메시지 받으면 자동으로 읽음 처리 API 호출
+          markAsRead(roomId, receivedMessage.id); // 메시지 받으면 자동으로 읽음 처리 API 호출
         },
         {
           Authorization: `Bearer ${token}`,
         }
       );
 
-      subscriptionsRef.current.push(subscription);
-
-      // 사용자별 개인 메시지 구독 (선택사항)
-      // stompClient.subscribe(`/user/queue/private`, (message: IMessage) => {
-      //   const receivedMessage: ChatMessage = JSON.parse(message.body);
-      //   setMessages((prev) => [...prev, receivedMessage]);
-      // });
-
-      // 채팅방 입장 시 읽음 처리(기존 메시지 읽음 처리)
+      subscriptionIdRef.current = subscriptionId;
       markAsReadOnEnterHandler(roomId, token);
-    };
+    }
 
-    // 연결 에러 시
-    stompClient.onStompError = (frame) => {
-      console.error("Broker reported error: " + frame.headers["message"]);
-      console.error("Additional details: " + frame.body);
-      setIsConnected(false);
-    };
-
-    // 연결 활성화
-    stompClient.activate();
-    stompClientRef.current = stompClient;
-
-    // 컴포넌트 언마운트 시 연결 해제
+    // 컴포넌트 언마운트 시 구독 해제
     return () => {
-      const cleanup = async () => {
-        subscriptionsRef.current.forEach((sub) => sub?.unsubscribe());
-        subscriptionsRef.current = [];
-
-        if (stompClientRef.current) {
-          await stompClientRef.current.deactivate();
-          stompClientRef.current = null;
-        }
-
-        setIsConnected(false);
-      };
-
-      cleanup();
+      if (subscriptionIdRef.current) {
+        console.log("Unsubscribing from room:", roomId);
+        unsubscribe(subscriptionIdRef.current);
+        subscriptionIdRef.current = "";
+      }
     };
-  }, [roomId, token, sessionStatus]);
+  }, [roomId, token, sessionStatus, isConnected, subscribe, unsubscribe]);
 
   // 메시지 전송 mutation
   const sendMessageMutation = useMutation({
@@ -194,16 +148,13 @@ export default function ChatContainer({
       };
 
       // 메시지 발행
-      stompClientRef.current?.publish({
-        destination: `/publish/${roomId}`, // Spring Controller의 @MessageMapping 경로
-        body: JSON.stringify(chatMessage),
-      });
+      publish(
+        `/publish/${roomId}`, // Spring Controller의 @MessageMapping 경로
+        JSON.stringify(chatMessage)
+      );
 
       //메시지 발행이 끝나면 해당 채팅방 메시지 목록과 채팅방 목록 캐시를 무효화
       queryClient.invalidateQueries({ queryKey: ["chatMessages", roomId] });
-      queryClient.invalidateQueries({
-        queryKey: ["chatRooms", session?.user?.id],
-      });
 
       //await sendMessageMutation.mutateAsync(content);
     } catch (error) {

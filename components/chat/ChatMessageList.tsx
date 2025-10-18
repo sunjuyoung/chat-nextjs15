@@ -64,7 +64,7 @@ export default function ChatMessageList({
             new Date(message.timestamp).toDateString();
 
         return (
-          <div key={message.id}>
+          <div key={`${message.id}-${message.timestamp}`}>
             {showDateDivider && (
               <div className="flex items-center justify-center my-6">
                 <div className="px-4 py-1.5 bg-gray-200/70 backdrop-blur-sm rounded-full text-xs font-medium text-gray-600 shadow-sm">
